@@ -1,0 +1,354 @@
+<!doctype html>
+<!--
+  SmokeShield — phone control page
+  ----------------------------------
+  Open this page in the Bluefy browser on iPhone (Safari has no Bluetooth).
+  Host it on any HTTPS address (for example GitHub Pages) as index.html.
+
+  Bluetooth link: Nordic UART Service (NUS)
+    Service   6e400001-b5a3-f393-e0a9-e50e24dcca9e
+    RX        6e400002-b5a3-f393-e0a9-e50e24dcca9e  phone -> Pi (write)
+    TX        6e400003-b5a3-f393-e0a9-e50e24dcca9e  Pi -> phone (notify)
+  The Pi should advertise the name "SmokeShield".
+
+  Pi -> phone: one JSON object per line, ending in "\n". Long lines may be
+  split across several notifications; this page joins them back together.
+    {"state":"closed","mode":"auto","pm25":58,"smoke":true,"sensor_ok":true}
+    state     : "open" | "closed" | "moving"
+    mode      : "auto" | "manual"
+    pm25      : PM2.5 in ug/m3 (number, or null when the sensor isn't reading)
+    smoke     : true when the Pi has decided there is smoke
+    sensor_ok : false when the particle sensor has stopped sending data
+    tvoc      : (optional, added later with the SGP30) TVOC in ppb
+  Any line that isn't JSON is only shown in the log.
+
+  Phone -> Pi: plain text commands ending in "\n"
+    OPEN   CLOSE   AUTO   MANUAL   STATUS
+    (OPEN and CLOSE also switch the Pi to MANUAL, so automatic mode
+     doesn't undo them. AUTO hands control back to the sensor.)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SmokeShield</title>
+<style>
+  :root {
+    --bg: #f3f4f6; --card: #ffffff; --text: #111827; --muted: #6b7280; --line: #e5e7eb;
+    --open: #15803d; --open-soft: #dcfce7; --closed: #b91c1c; --closed-soft: #fee2e2;
+    --warn: #c2410c; --warn-soft: #ffedd5; --accent: #2563eb; --accent-soft: #dbeafe;
+    --btn: #111827; --btn-text: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0f17; --card: #151b26; --text: #f3f4f6; --muted: #9ca3af; --line: #263142;
+      --open: #4ade80; --open-soft: #0f2e1b; --closed: #f87171; --closed-soft: #3a1414;
+      --warn: #fdba74; --warn-soft: #3a2010; --accent: #60a5fa; --accent-soft: #10223f;
+      --btn: #f3f4f6; --btn-text: #111827;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  .wrap { max-width: 460px; margin: 0 auto; display: grid; gap: 12px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { font-size: 22px; margin: 0; }
+  .pill { font-size: 13px; font-weight: 600; padding: 6px 10px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill::before { content: "●"; margin-right: 6px; }
+  .pill.connected { color: var(--open); border-color: var(--open); }
+  .pill.connecting { color: var(--accent); border-color: var(--accent); }
+  .pill.demo { color: var(--warn); border-color: var(--warn); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+  .notice { font-size: 15px; line-height: 1.4; }
+  .notice b { display: block; margin-bottom: 4px; }
+
+  .shutter { text-align: center; padding: 24px 16px; border-width: 2px; }
+  .shutter.open { border-color: var(--open); background: var(--open-soft); }
+  .shutter.closed { border-color: var(--closed); background: var(--closed-soft); }
+  .shutter.jam { border-color: var(--warn); background: var(--warn-soft); }
+  .label { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .big { font-size: 40px; font-weight: 800; margin: 6px 0 4px; }
+  .shutter.open .big { color: var(--open); }
+  .shutter.closed .big { color: var(--closed); }
+  .shutter.jam .big { color: var(--warn); }
+  .sub { font-size: 15px; color: var(--muted); }
+  .mode { display: inline-block; margin-top: 10px; font-size: 13px; font-weight: 700;
+    padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  [hidden] { display: none !important; }
+  .tile .value { font-size: 32px; font-weight: 800; margin-top: 4px; }
+  .tile .unit { font-size: 14px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+
+  .alert { border-radius: 16px; padding: 14px 16px; font-size: 15px; line-height: 1.4; display: none; }
+  .alert.show { display: block; }
+  .alert.warn { background: var(--warn-soft); border: 2px solid var(--warn); color: var(--warn); }
+  .alert.info { background: var(--closed-soft); border: 2px solid var(--closed); color: var(--closed); }
+
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button { font: inherit; font-size: 17px; font-weight: 700; border: 0; border-radius: 14px;
+    padding: 16px 8px; background: var(--btn); color: var(--btn-text); cursor: pointer; }
+  button:disabled { opacity: .35; cursor: default; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.active { outline: 3px solid var(--accent); outline-offset: 2px; }
+  #connectBtn { width: 100%; background: var(--accent); color: #fff; }
+
+  .updated { text-align: center; font-size: 13px; color: var(--muted); }
+  .updated.stale { color: var(--warn); font-weight: 600; }
+
+  details { font-size: 13px; color: var(--muted); }
+  summary { cursor: pointer; padding: 4px 0; }
+  #log { margin-top: 8px; max-height: 180px; overflow-y: auto; white-space: pre-wrap;
+    word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>SmokeShield</h1>
+    <span id="connPill" class="pill">Not connected</span>
+  </header>
+
+  <div id="noBt" class="card notice" hidden>
+    <b>This browser can't use Bluetooth.</b>
+    On iPhone, open this page in the free Bluefy app. You can preview the screen with demo data below.
+    <div style="margin-top:12px"><button id="demoBtn" class="secondary" style="width:100%">Try demo</button></div>
+  </div>
+
+  <button id="connectBtn">Connect</button>
+
+  <section id="shutterCard" class="card shutter">
+    <div class="label">Shutter</div>
+    <div id="shutterText" class="big">—</div>
+    <div id="lockText" class="sub">Waiting for data</div>
+    <span id="modeText" class="mode">—</span>
+  </section>
+
+  <div id="alertBox" class="alert"></div>
+
+  <div class="tiles">
+    <section class="card tile">
+      <div class="label">PM2.5</div>
+      <div><span id="pmValue" class="value">—</span><span class="unit">µg/m³</span></div>
+    </section>
+    <section id="tvocTile" class="card tile" hidden>
+      <div class="label">TVOC</div>
+      <div><span id="vocValue" class="value">—</span><span class="unit">ppb</span></div>
+    </section>
+  </div>
+
+  <div class="buttons">
+    <button id="shutterBtn" disabled>Open / Close</button>
+    <button id="modeBtn" class="secondary" disabled>Auto / Manual</button>
+  </div>
+
+  <div id="updated" class="updated">No data yet</div>
+
+  <details>
+    <summary>Connection log</summary>
+    <div id="log"></div>
+  </details>
+
+</div>
+
+<script>
+  // Nordic UART Service UUIDs (must match the Pi)
+  const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+  const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // phone -> Pi
+  const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Pi -> phone
+  const STALE_MS = 15000;
+
+  const $ = id => document.getElementById(id);
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+
+  let device = null, rxChar = null, buffer = '';
+  let state = {}, lastUpdate = 0, connected = false, demoTimer = null;
+
+  function log(text) {
+    const time = new Date().toLocaleTimeString();
+    const box = $('log');
+    box.textContent = `${time}  ${text}\n` + box.textContent.slice(0, 6000);
+  }
+
+  function setConn(status) {
+    const pill = $('connPill');
+    pill.className = 'pill ' + status;
+    pill.textContent = { connected: 'Connected', connecting: 'Connecting…', demo: 'Demo mode', disconnected: 'Not connected' }[status];
+    connected = status === 'connected' || status === 'demo';
+    $('connectBtn').hidden = connected;
+    $('connectBtn').textContent = device ? 'Reconnect' : 'Connect';
+    $('connectBtn').disabled = status === 'connecting';
+    ['shutterBtn', 'modeBtn'].forEach(id => $(id).disabled = !connected);
+  }
+
+  // ---------- Bluetooth ----------
+  async function connect() {
+    if (!navigator.bluetooth) { $('noBt').hidden = false; return; }
+    try {
+      setConn('connecting');
+      if (!device) {
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'SmokeShield' }, { services: [NUS] }],
+          optionalServices: [NUS]
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnect);
+      }
+      log('Connecting to ' + (device.name || 'device'));
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(NUS);
+      rxChar = await service.getCharacteristic(RX);
+      const txChar = await service.getCharacteristic(TX);
+      await txChar.startNotifications();
+      txChar.addEventListener('characteristicvaluechanged', onData);
+      buffer = '';
+      setConn('connected');
+      log('Connected');
+      send('STATUS');
+    } catch (err) {
+      log('Connect failed: ' + err.message);
+      setConn('disconnected');
+    }
+  }
+
+  function onDisconnect() {
+    rxChar = null;
+    log('Disconnected');
+    setConn('disconnected');
+  }
+
+  function onData(event) {
+    buffer += dec.decode(event.target.value);
+    let i;
+    while ((i = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, i).trim();
+      buffer = buffer.slice(i + 1);
+      if (line) handleLine(line);
+    }
+    if (buffer.length > 2000) buffer = ''; // guard against a line that never ends
+  }
+
+  function handleLine(line) {
+    log('← ' + line);
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+    Object.assign(state, msg);
+    lastUpdate = Date.now();
+    render();
+  }
+
+  async function send(cmd) {
+    if (demoTimer) { demoCommand(cmd); return; }
+    if (!rxChar) return;
+    try {
+      const data = enc.encode(cmd + '\n');
+      if (rxChar.writeValueWithResponse) await rxChar.writeValueWithResponse(data);
+      else await rxChar.writeValue(data);
+      log('→ ' + cmd);
+    } catch (err) {
+      log('Send failed: ' + err.message);
+    }
+  }
+
+  // ---------- Screen ----------
+  function render() {
+    const s = state.state;
+    const card = $('shutterCard');
+    card.className = 'card shutter ' + (s === 'open' ? 'open' : s === 'closed' ? 'closed' : '');
+    $('shutterText').textContent =
+      s === 'open' ? 'OPEN' : s === 'closed' ? 'CLOSED' : s === 'moving' ? 'MOVING…' : '—';
+    $('lockText').textContent =
+      s === 'closed' ? 'Blocking airflow' :
+      s === 'open' ? 'Air flowing' :
+      s === 'moving' ? 'Servo is moving' : 'Waiting for data';
+
+    const auto = state.mode === 'auto';
+    $('modeText').textContent = state.mode ? (auto ? 'AUTO' : 'MANUAL') : '—';
+
+    // Button 1: opposite of the current shutter position
+    $('shutterBtn').textContent = s === 'closed' ? 'Open shutter' : 'Close shutter';
+    // Button 2: switch to the other mode
+    $('modeBtn').textContent = auto ? 'Switch to MANUAL' : 'Switch to AUTO';
+
+    $('pmValue').textContent = Number.isFinite(state.pm25) ? Math.round(state.pm25) : '—';
+    const hasTvoc = Number.isFinite(state.tvoc);
+    $('tvocTile').hidden = !hasTvoc;
+    $('vocValue').textContent = hasTvoc ? Math.round(state.tvoc) : '—';
+
+    const box = $('alertBox');
+    if (state.sensor_ok === false) {
+      box.className = 'alert warn show';
+      box.textContent = '⚠️ The particle sensor is not sending data. Check its wiring. Automatic mode is paused until it works again.';
+    } else if (state.smoke && s === 'open') {
+      box.className = 'alert warn show';
+      box.textContent = `⚠️ Smoke detected in the duct (PM2.5 ${Math.round(state.pm25 ?? 0)} µg/m³). Check local air quality and weather before keeping the vent open.`;
+    } else if (state.smoke) {
+      box.className = 'alert info show';
+      box.textContent = '🔥 Smoke detected. Shutter closed.';
+    } else {
+      box.className = 'alert';
+    }
+  }
+
+  function tick() {
+    const el = $('updated');
+    if (!lastUpdate) { el.textContent = 'No data yet'; el.className = 'updated'; return; }
+    const age = Date.now() - lastUpdate;
+    const stale = connected && age > STALE_MS;
+    el.className = 'updated' + (stale ? ' stale' : '');
+    el.textContent = stale ? `No new data for ${Math.round(age / 1000)} s` : `Updated ${Math.round(age / 1000)} s ago`;
+  }
+
+  // ---------- Buttons ----------
+  $('connectBtn').addEventListener('click', connect);
+  $('shutterBtn').addEventListener('click', () => {
+    if (state.state === 'closed') {
+      if (state.smoke && !confirm('Smoke is detected in the duct. Open the vent anyway?')) return;
+      send('OPEN');    // the Pi also switches to MANUAL
+    } else {
+      send('CLOSE');   // the Pi also switches to MANUAL
+    }
+  });
+  $('modeBtn').addEventListener('click', () => send(state.mode === 'auto' ? 'MANUAL' : 'AUTO'));
+
+  // ---------- Demo mode (preview without the Pi) ----------
+  $('demoBtn').addEventListener('click', () => {
+    $('noBt').hidden = true;
+    state = { state: 'open', mode: 'auto', pm25: 6, smoke: false, sensor_ok: true };
+    let t = 0;
+    demoTimer = setInterval(() => {
+      t++;
+      const smoky = t % 40 > 15 && t % 40 < 30;       // smoke comes and goes
+      state.pm25 = smoky ? 55 + Math.random() * 10 : 5 + Math.random() * 3;
+      state.smoke = smoky;
+      if (state.mode === 'auto') state.state = smoky ? 'closed' : 'open';
+      lastUpdate = Date.now();
+      render();
+    }, 1000);
+    lastUpdate = Date.now();
+    setConn('demo');
+    render();
+    log('Demo mode started (fake data)');
+  });
+
+  function demoCommand(cmd) {
+    log('→ ' + cmd + ' (demo)');
+    if (cmd === 'OPEN')   Object.assign(state, { state: 'open', mode: 'manual' });
+    if (cmd === 'CLOSE')  Object.assign(state, { state: 'closed', mode: 'manual' });
+    if (cmd === 'AUTO')   state.mode = 'auto';
+    if (cmd === 'MANUAL') state.mode = 'manual';
+    render();
+  }
+
+  // ---------- Start ----------
+  if (!navigator.bluetooth) $('noBt').hidden = false;
+  setConn('disconnected');
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>

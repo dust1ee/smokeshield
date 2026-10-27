@@ -1,0 +1,13 @@
+[Unit]
+Description=SmokeShield controller
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+ExecStart=/opt/smokeshield/venv/bin/python /opt/smokeshield/smokeshield.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
