@@ -376,6 +376,10 @@ def run():
         time.sleep(1)
     if not dongle.powered:
         raise RuntimeError("Bluetooth is off. Run: sudo rfkill unblock bluetooth")
+    try:
+        dongle.alias = DEVICE_NAME          # name phones show (instead of "raspberrypi")
+    except Exception as e:
+        log.warning("Could not rename Bluetooth adapter: %s", e)
     p = peripheral.Peripheral(dongle.address, local_name=DEVICE_NAME)
     p.add_service(srv_id=1, uuid=NUS_SERVICE, primary=True)
     p.add_characteristic(srv_id=1, chr_id=1, uuid=NUS_RX, value=[], notifying=False,
@@ -404,3 +408,4 @@ if __name__ == "__main__":
         run_servo_test(args.servo_test)
     else:
         run()
+ 
