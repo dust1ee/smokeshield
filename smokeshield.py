@@ -46,17 +46,18 @@ PMS_BAUD = 9600                      # fixed by the PMS5003
 SENSOR_TIMEOUT_S = 30                # no reading for this long = sensor problem
  
 # --- Smoke levels ---
-# TEMPORARY TEST VALUES. They do not come from any standard.
-# Replace them with your own numbers after the incense calibration test.
-CLOSE_PM25 = 50       # ug/m3: close when PM2.5 is at or above this...
+# From the US EPA AQI PM2.5 breakpoints (2024): 35.5 starts "Unhealthy for
+# Sensitive Groups", 9.0 and below is "Good". The EPA levels are 24-hour
+# averages; here they apply to a few seconds of readings, which errs toward closing.
+CLOSE_PM25 = 35.5     # ug/m3: close when PM2.5 is at or above this...
 CLOSE_DELAY_S = 10    # ...for this many seconds in a row
-CLEAR_PM25 = 20       # ug/m3: reopen when PM2.5 is below this...
-CLEAR_DELAY_S = 300   # ...for this many seconds in a row (300 s = 5 min)
+CLEAR_PM25 = 9.1      # ug/m3: reopen when PM2.5 is below this (9 or less = "Good")...
+CLEAR_DELAY_S = 10    # ...for this many seconds in a row (DEMO value; was 300 = 5 min)
  
 # --- Servo (hardware PWM on GPIO18 = physical pin 12) ---
 # Find the right values with --servo-test before mounting the flap.
-SERVO_OPEN_US = 1500      # pulse width (microseconds) for OPEN
-SERVO_CLOSED_US = 2000    # pulse width (microseconds) for CLOSED
+SERVO_OPEN_US = 980       # pulse width (microseconds) for OPEN (measured: arm level)
+SERVO_CLOSED_US = 1955    # pulse width (microseconds) for CLOSED (measured: arm vertical)
 SERVO_MIN_US = 500        # safety limits: no pulse outside this range is sent.
 SERVO_MAX_US = 2500       # (Your servo's exact range is not known - stay inside.)
 SERVO_MOVE_S = 1.0        # how long the phone shows "moving"
@@ -302,8 +303,9 @@ class PhoneLink:
             log.info("Phone is listening")
             self.send_status()
  
-    def on_connect(self, adapter_address, device_address):
-        log.info("Phone connected: %s", device_address)
+    def on_connect(self, device):
+        # One argument: bluezero passes a Device on every connect path.
+        log.info("Phone connected: %s", device.address)
  
     def on_disconnect(self, adapter_address, device_address):
         log.info("Phone disconnected: %s", device_address)
