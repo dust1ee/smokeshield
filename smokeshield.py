@@ -50,7 +50,7 @@ SENSOR_TIMEOUT_S = 30                # no reading for this long = sensor problem
 # Sensitive Groups", 9.0 and below is "Good". The EPA levels are 24-hour
 # averages; here they apply to a few seconds of readings, which errs toward closing.
 CLOSE_PM25 = 35.5     # ug/m3: close when PM2.5 is at or above this...
-CLOSE_DELAY_S = 10    # ...for this many seconds in a row
+CLOSE_DELAY_S = 0     # ...for this many seconds in a row (0 = close on the first high reading)
 CLEAR_PM25 = 9.1      # ug/m3: reopen when PM2.5 is below this (9 or less = "Good")...
 CLEAR_DELAY_S = 10    # ...for this many seconds in a row (DEMO value; was 300 = 5 min)
  
