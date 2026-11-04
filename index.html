@@ -162,6 +162,7 @@
   const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // phone -> Pi
   const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Pi -> phone
   const STALE_MS = 15000;
+  const RETRY_MS = 3000;   // wait this long before each automatic reconnect try
 
   const $ = id => document.getElementById(id);
   const enc = new TextEncoder();
@@ -169,6 +170,7 @@
 
   let device = null, rxChar = null, buffer = '';
   let state = {}, lastUpdate = 0, connected = false, demoTimer = null;
+  let busy = false, retryTimer = null;
 
   function log(text) {
     const time = new Date().toLocaleTimeString();
@@ -190,6 +192,8 @@
   // ---------- Bluetooth ----------
   async function connect() {
     if (!navigator.bluetooth) { $('noBt').hidden = false; return; }
+    if (busy) return;                    // a connect attempt is already running
+    busy = true;
     try {
       setConn('connecting');
       if (!device) {
@@ -213,6 +217,9 @@
     } catch (err) {
       log('Connect failed: ' + err.message);
       setConn('disconnected');
+      scheduleReconnect();
+    } finally {
+      busy = false;
     }
   }
 
@@ -220,7 +227,22 @@
     rxChar = null;
     log('Disconnected');
     setConn('disconnected');
+    scheduleReconnect();
   }
+
+  // Auto-reconnect: only to a device the user already picked (iOS needs a tap
+  // for the first pick), and only while the page is on screen.
+  function scheduleReconnect() {
+    if (!device || connected || demoTimer || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (!connected && document.visibilityState === 'visible') connect();
+    }, RETRY_MS);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleReconnect();
+  });
 
   function onData(event) {
     buffer += dec.decode(event.target.value);
